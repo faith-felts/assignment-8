@@ -1,11 +1,38 @@
 const express = require('express');
-const { db, Project, Task } = require('./database/setup');
-
+const { db, sequelize, Project, Task, User} = require('./database/setup');
+const bcrypt = require('bcryptjs');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middleware
 app.use(express.json());
+
+const session = require('express-session');
+
+app.use(session({
+    secret: process.env.SESSION_SECRET,
+    resave: false,
+    saveUninitialized: false,
+    cookie: { 
+        secure: false,
+        maxAge: 24 * 60 * 60 * 1000
+    }
+}));
+
+function requireAuth(req, res, next) {
+    if (req.session && req.session.userId) {
+        req.user = {
+            id: req.session.userId,
+            name: req.session.userName,
+            email: req.session.userEmail
+        };
+        next();
+    } else {
+        res.status(401).json({ 
+            error: 'Authentication required. Please log in.' 
+        });
+    }
+}
 
 // Test database connection
 async function testConnection() {
@@ -16,13 +43,104 @@ async function testConnection() {
         console.error('Unable to connect to the database:', error);
     }
 }
-
 testConnection();
 
 // PROJECT ROUTES
 
+// POST /api/register - Register new library patron
+app.post('/api/register', async (req, res) => {
+    try {
+        const { username, email, password } = req.body;
+    
+        // Check if user with this email already exists
+        const existingUser = await User.findOne({ where: { email } });
+        if (existingUser) {
+            return res.status(400).json({ error: 'User with this email already exists' });
+        }
+    
+        // Hash the password before storing it
+        const saltRounds = 10;
+        const hashedPassword = await bcrypt.hash(password, saltRounds);
+    
+        // Create new user with hashed password
+        const newUser = await User.create({
+            username,
+            email,
+            password: hashedPassword  // Store the hash, not the original password
+        });
+    
+        // Return success (don't send back the password)
+        res.status(201).json({
+            message: 'User registered successfully',
+            user: {
+                id: newUser.id,
+                username: newUser.username,
+                email: newUser.email
+            }
+        });
+    
+    } catch (error) {
+        console.error('Error registering user:', 
+    error);
+        res.status(500).json({ error: 'Failed to register user' });
+    }
+});
+
+// POST /api/login - User login
+app.post('/api/login', async (req, res) => {
+    try {
+        const { email, password } = req.body;
+    
+        // Find user by email
+        const user = await User.findOne({ where: { 
+    email } });
+        if (!user) {
+            return res.status(401).json({ error:
+        'Invalid email or password' });
+        }
+    
+         // Compare provided password with hashed password
+        const isValidPassword = await 
+    bcrypt.compare(password, user.password);
+        if (!isValidPassword) {
+            return res.status(401).json({ error: 
+        'Invalid email or password' });
+        }
+    
+        // Password is correct - create session
+        req.session.userId = user.id;
+        req.session.userName = user.name;
+        req.session.userEmail = user.email;
+        
+        res.json({
+            message: 'Login successful',
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email
+            }
+        });
+    
+    } catch (error) {
+        console.error('Error logging in user:', 
+    error);
+        res.status(500).json({ error: 'Failed to login' });
+    }
+});
+
+// POST /api/logout - User logout
+app.post('/api/logout', (req, res) => { 
+    req.session.destroy((err) => { 
+        if(err) { 
+            console.error('Error destroying the session', err); 
+            return res.status(500).json({ error: 'Failed to logout' }) 
+        } 
+        res.json({ message: "Logout successful" }) 
+    }) 
+})
+
 // GET /api/projects - Get all projects
-app.get('/api/projects', async (req, res) => {
+app.get('/api/projects', requireAuth, async (req, res) => {
     try {
         const projects = await Project.findAll();
         res.json(projects);
@@ -138,7 +256,7 @@ app.get('/api/tasks/:id', async (req, res) => {
 
 // POST /api/tasks - Create new task
 app.post('/api/tasks', async (req, res) => {
-    try {
+    try { 
         const { title, description, completed, priority, dueDate, projectId } = req.body;
         
         const newTask = await Task.create({
